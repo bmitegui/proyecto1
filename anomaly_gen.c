@@ -203,13 +203,13 @@ static void worker_stress(int duracion, int id_worker) {
         return;
     }
 
-    printf("[Worker %d] Iniciando estres de recursos (CPU y 1GB RAM) por %d segundos...\n", id_worker, duracion);
+    printf("[Worker %d] Iniciando estres de recursos (CPU y 3GB RAM) por %d segundos...\n", id_worker, duracion);
     char timeout_str[16];
     snprintf(timeout_str, sizeof(timeout_str), "%ds", duracion);
 
     pid_t pid = fork();
     if (pid == 0) {
-        execlp("stress", "stress", "--cpu", "2", "--vm", "1", "--vm-bytes", "1G", "--timeout", timeout_str, NULL);
+        execlp("stress", "stress", "--cpu", "4", "--vm", "3", "--vm-bytes", "1G", "--timeout", timeout_str, NULL);
         /* Si falla execlp (probablemente no esta instalado stress) */
         fprintf(stderr, "\n[ERROR] No se pudo ejecutar 'stress'. Asegurese de instalarlo con: sudo apt install stress\n\n");
         _exit(EXIT_FAILURE);

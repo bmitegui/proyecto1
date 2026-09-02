@@ -281,9 +281,9 @@ static void *hilo_dashboard(void *arg) {
                 }
             }
             
-            /* Chequear alertas de metricas (ej. > 95% RAM o Disco) */
+            /* Chequear alertas de metricas (ej. > 90% RAM o Disco) */
             if (!desconectado) {
-                if (ag->mem_pct >= 95 || ag->disk_pct >= 95) {
+                if (ag->mem_pct >= 90 || ag->disk_pct >= 90) {
                     hay_alertas = 1;
                     if (!ag->alerta_enviada) {
                         char motivo[128];
