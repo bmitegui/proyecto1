@@ -36,11 +36,13 @@ static void mostrar_uso(const char *prog) {
         "                   1 = Conexiones TCP malformadas (default)\n"
         "                   2 = Intentos SSH fallidos (puerto 22 ideal)\n"
         "                   3 = HTTP Flood (peticiones 404 para logs web)\n"
+        "                   4 = Estres de recursos (CPU y RAM usando 'stress')\n"
         "  -h             Mostrar esta ayuda\n\n"
         "Ejemplos:\n"
         "  %s -t 192.168.1.10 -p 80 -m 3 -w 5 -d 60      (HTTP Flood a servidor web)\n"
-        "  %s -t 10.10.0.5 -p 22 -m 2 -w 2 -d 20         (Auth SSH fallidos)\n\n",
-        prog, MAX_WORKERS, prog, prog);
+        "  %s -t 10.10.0.5 -p 22 -m 2 -w 2 -d 20         (Auth SSH fallidos)\n"
+        "  %s -m 4 -d 30                                 (Estres de CPU y RAM)\n\n",
+        prog, MAX_WORKERS, prog, prog, prog);
 }
 
 /* ================================================================
@@ -189,6 +191,44 @@ static void worker_http(const char *host, int puerto, int id_worker) {
 }
 
 
+/* =================================================================
+ *              MODO 4: ESTRES DE RECURSOS (CPU/RAM)
+ * ================================================================ */
+
+static void worker_stress(int duracion, int id_worker) {
+    /* Solo el worker 0 necesita ejecutar el comando stress */
+    if (id_worker > 0) {
+        printf("[Worker %d] Inactivo en este modo (esperando...)\n", id_worker);
+        while(!g_detener) { usleep(500000); }
+        return;
+    }
+
+    printf("[Worker %d] Iniciando estres de recursos (CPU y 1GB RAM) por %d segundos...\n", id_worker, duracion);
+    char timeout_str[16];
+    snprintf(timeout_str, sizeof(timeout_str), "%ds", duracion);
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        execlp("stress", "stress", "--cpu", "2", "--vm", "1", "--vm-bytes", "1G", "--timeout", timeout_str, NULL);
+        /* Si falla execlp (probablemente no esta instalado stress) */
+        fprintf(stderr, "\n[ERROR] No se pudo ejecutar 'stress'. Asegurese de instalarlo con: sudo apt install stress\n\n");
+        _exit(EXIT_FAILURE);
+    } else if (pid > 0) {
+        /* Esperar a que termine stress, o si g_detener se activa, le mandamos SIGTERM */
+        while (!g_detener) {
+            int status;
+            pid_t res = waitpid(pid, &status, WNOHANG);
+            if (res == pid || res == -1) break;
+            usleep(100000);
+        }
+        if (g_detener) {
+            kill(pid, SIGTERM);
+            waitpid(pid, NULL, 0);
+        }
+    }
+}
+
+
 /* ================================================================
  *                         MAIN PRINCIPAL
  * ================================================================ */
@@ -228,8 +268,8 @@ int main(int argc, char *argv[]) {
             break;
         case 'm':
             modo = atoi(optarg);
-            if (modo < 1 || modo > 3) {
-                fprintf(stderr, "Error: modo debe ser 1, 2 o 3\n");
+            if (modo < 1 || modo > 4) {
+                fprintf(stderr, "Error: modo debe ser 1, 2, 3 o 4\n");
                 return EXIT_FAILURE;
             }
             break;
@@ -249,8 +289,10 @@ int main(int argc, char *argv[]) {
         printf("Modo:      TCP flood (conexiones malformadas)\n");
     } else if (modo == 2) {
         printf("Modo:      Intentos SSH fallidos\n");
-    } else {
+    } else if (modo == 3) {
         printf("Modo:      HTTP Flood (Errores 404)\n");
+    } else {
+        printf("Modo:      Estres de Recursos (CPU y RAM)\n");
     }
     printf("Workers:   %d\n", n_workers);
     printf("Duracion:  %d segundos\n\n", duracion);
@@ -280,8 +322,10 @@ int main(int argc, char *argv[]) {
                 worker_tcp(target_ip, puerto, i);
             } else if (modo == 2) {
                 worker_ssh(target_ip, puerto, i);
-            } else {
+            } else if (modo == 3) {
                 worker_http(target_ip, puerto, i);
+            } else {
+                worker_stress(duracion, i);
             }
 
             _exit(EXIT_SUCCESS);
