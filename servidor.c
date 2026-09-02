@@ -19,6 +19,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <time.h>
+#include <stdarg.h>
 
 #include "protocolo.h"
 
@@ -53,6 +54,7 @@ typedef struct {
     char ip[INET_ADDRSTRLEN];
     char id_agente[MAX_NOMBRE_ARCHIVO];
     time_t ultima_act;
+    int estado_previo; /* 1 = conectado, 0 = desconectado */
     
     int mem_pct;
     int disk_pct;
@@ -82,6 +84,26 @@ ConexionCliente g_conexiones[MAX_AGENTES];
 pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile int g_servidor_activo = 1;
 int g_threshold = 5;
+
+static void registrar_evento(const char *formato, ...) {
+    FILE *fp = fopen("siemlite_eventos.log", "a");
+    if (!fp) return;
+
+    time_t ahora = time(NULL);
+    struct tm *tm_info = localtime(&ahora);
+    char hora[32];
+    strftime(hora, sizeof(hora), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    fprintf(fp, "[%s] ", hora);
+
+    va_list args;
+    va_start(args, formato);
+    vfprintf(fp, formato, args);
+    va_end(args);
+
+    fprintf(fp, "\n");
+    fclose(fp);
+}
 
 static void manejador_sigint(int sig) {
     (void)sig;
@@ -201,6 +223,7 @@ static void *hilo_dashboard(void *arg) {
         printf("  %sSIEMLite Distribuido - Monitor Central%s\n", C_BLANC, C_RESET);
         printf("  %sActualizacion: %s  |  Umbral Alertas: %d%s\n", C_GRIS, hora, g_threshold, C_RESET);
         printf("  %sNotificaciones: %s%s\n", C_GRIS, twilio_ok ? "Twilio Configurado" : "Solo Local", C_RESET);
+        printf("  %sHistorial: siemlite_eventos.log%s\n", C_GRIS, C_RESET);
         printf(" %s================================================================%s\n\n", C_CYAN, C_RESET);
 
         int hay_alertas = 0;
@@ -212,6 +235,14 @@ static void *hilo_dashboard(void *arg) {
             AgenteInfo *ag = &g_agentes[i];
             double seg_inactivo = difftime(ahora, ag->ultima_act);
             int desconectado = (seg_inactivo > 30.0); /* 30s sin datos = Desconectado */
+            
+            if (desconectado && ag->estado_previo == 1) {
+                registrar_evento("DESCONEXIÓN: Agente %s [%s] inactivo por más de 30s", ag->ip, ag->id_agente);
+                ag->estado_previo = 0;
+            } else if (!desconectado && ag->estado_previo == 0) {
+                registrar_evento("CONEXIÓN: Agente %s [%s] reconectado", ag->ip, ag->id_agente);
+                ag->estado_previo = 1;
+            }
             
             printf("  %s[%s]%s Agente: %s%s [%s]%s  %s(Inactivo: %.0fs)%s\n", 
                    desconectado ? C_ROJO : C_VERDE, desconectado ? "OFF" : "ON", C_RESET,
@@ -237,6 +268,7 @@ static void *hilo_dashboard(void *arg) {
                             if (!ag->alerta_enviada) {
                                 char motivo[128];
                                 snprintf(motivo, sizeof(motivo), "Log critico en %s (%d msgs %s)", svc->nombre, svc->contadores[p], NOM_PRIOR[p]);
+                                registrar_evento("ALERTA: Agente %s [%s] - Servicio %s supera umbral en %s (%d msgs)", ag->ip, ag->id_agente, svc->nombre, NOM_PRIOR[p], svc->contadores[p]);
                                 if (twilio_ok) enviar_whatsapp(ag->ip, motivo);
                                 ag->alerta_enviada = 1;
                             }
@@ -256,6 +288,7 @@ static void *hilo_dashboard(void *arg) {
                     if (!ag->alerta_enviada) {
                         char motivo[128];
                         snprintf(motivo, sizeof(motivo), "Umbral de recursos superado (RAM %d%%, Disco %d%%)", ag->mem_pct, ag->disk_pct);
+                        registrar_evento("ALERTA: Agente %s [%s] - Recursos críticos (RAM %d%%, Disco %d%%)", ag->ip, ag->id_agente, ag->mem_pct, ag->disk_pct);
                         if (twilio_ok) enviar_whatsapp(ag->ip, motivo);
                         ag->alerta_enviada = 1;
                     }
@@ -268,6 +301,7 @@ static void *hilo_dashboard(void *arg) {
             
             /* Reset alerta si ya no hay problemas */
             if (!hay_alertas && ag->alerta_enviada) {
+                registrar_evento("INFO: Agente %s [%s] - Estado normalizado (alertas resueltas)", ag->ip, ag->id_agente);
                 ag->alerta_enviada = 0;
             }
             
@@ -412,6 +446,8 @@ int main(int argc, char *argv[]) {
     memset(g_agentes, 0, sizeof(g_agentes));
     memset(g_conexiones, 0, sizeof(g_conexiones));
 
+    registrar_evento("SISTEMA: Servidor central SIEMLite iniciado en el puerto %d", puerto);
+
     /* Iniciar hilo dashboard */
     pthread_t thread_dash;
     pthread_create(&thread_dash, NULL, hilo_dashboard, NULL);
@@ -472,6 +508,8 @@ int main(int argc, char *argv[]) {
                 strcpy(g_agentes[ag_idx].ip, ip_str);
                 strncpy(g_agentes[ag_idx].id_agente, pkt.nombre_archivo, MAX_NOMBRE_ARCHIVO - 1);
                 g_agentes[ag_idx].ultima_act = time(NULL);
+                g_agentes[ag_idx].estado_previo = 1;
+                registrar_evento("NUEVO AGENTE: Registrado agente %s [%s]", ip_str, pkt.nombre_archivo);
             } else {
                 pthread_mutex_unlock(&g_mutex);
                 continue; /* No hay espacio */
@@ -540,6 +578,7 @@ int main(int argc, char *argv[]) {
     }
 
     close(sockfd);
+    registrar_evento("SISTEMA: Servidor central apagado");
     system("clear");
     printf("Servidor apagado.\n");
     return 0;
